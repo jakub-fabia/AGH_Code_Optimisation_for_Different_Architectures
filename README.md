@@ -5,18 +5,18 @@ Coursework for the AGH UST course **Code Optimisation for Different Architecture
 
 The exercises explore how compiler flags, memory-access patterns, and SIMD
 vectorisation affect the performance of numerical kernels on modern x86-64
-hardware. Each part contains C/C++ implementations, a `Makefile` benchmark
-harness, and a written report (`.tex` / `.pdf`, in Polish).
+hardware. Each part contains C/C++ implementations and a `Makefile` benchmark
+harness; most parts also include a LaTeX report (`.tex`, in Polish).
 
 ## Layout
 
-| Directory | Topic | Kernels |
-|-----------|-------|---------|
-| `lab_1/`  | Matrix multiplication — loop ordering & `-O2` | `mm1.c … mm9.c` |
-| `lab_3/`  | Gaussian elimination — flag sweep (`-O2`, `-march=native`, `-mfma`, AVX intrinsics) | `ge1.c … ge8.c` |
-| `lab_4/`  | Cholesky factorization — up to AVX intrinsics (`chol6`) | `chol1.c … chol6.c` |
-| `zad_1/`  | Profiling with `gprof` on a text-processing workload | `*/base.cpp` |
-| `zad_2/`  | Gaussian elimination optimised in 7 stages + PAPI hardware counters | `1..7/ge.c` |
+| Directory | Topic | Kernels | Report |
+|-----------|-------|---------|--------|
+| `lab_1/`  | Matrix multiplication — loop ordering & `-O2` | `mm1.c … mm9.c` | — |
+| `lab_3/`  | Gaussian elimination — flag sweep (`-O2`, `-march=native`, `-mfma`, AVX intrinsics) | `ge1.c … ge8.c` | `lab3.tex` |
+| `lab_4/`  | Cholesky factorization — up to AVX intrinsics (`chol6`) | `chol1.c … chol6.c` | — |
+| `zad_1/`  | Profiling with `gprof` on a text-processing workload | `*/base.cpp` | `raport.tex` |
+| `zad_2/`  | Gaussian elimination optimised in 7 stages + PAPI hardware counters | `1..7/ge.c` | `raport.tex` |
 
 ## Building & running
 
