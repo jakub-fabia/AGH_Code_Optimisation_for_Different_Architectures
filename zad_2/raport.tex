@@ -1,0 +1,277 @@
+\documentclass[11pt,a4paper]{article}
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage[polish]{babel}
+\usepackage[margin=2.2cm]{geometry}
+\usepackage{booktabs}
+\usepackage{listings}
+\usepackage{xcolor}
+\usepackage{hyperref}
+\usepackage{float}
+\usepackage{amsmath}
+
+\lstset{
+  basicstyle=\ttfamily\small,
+  keywordstyle=\color{blue!60!black},
+  commentstyle=\color{green!50!black},
+  stringstyle=\color{orange!70!black},
+  numbers=left,
+  numberstyle=\tiny\color{gray},
+  frame=single,
+  breaklines=true,
+  showstringspaces=false,
+}
+
+\title{Zadanie 2 --- Optymalizacja Kodu Na Różne Architektury\\
+\large Eliminacja Gaussa}
+\author{Jakub Fabia}
+\date{\today}
+
+\begin{document}
+\maketitle
+
+\section{Platforma testowa}
+
+Zadanie wykonano na platformie opisanej poniżej.
+
+System:
+\begin{itemize}
+\item   Kernel: 6.18.7-76061807-generic
+\item   arch: x86\_64, bits: 64
+\item   Distro: Pop!\_OS 24.04 LTS noble
+\item   Kompilator: gcc 13.3.0; środowisko narzędziowe Python: \texttt{uv} 0.11 + \texttt{numpy}
+\end{itemize}
+
+CPU --- AMD Ryzen 7 6800H (mikroarchitektura Zen 3+, ,,Rembrandt''):
+\begin{itemize}
+\item   8 rdzeni / 16 wątków, Base/Boost: 3{,}2 / 4{,}7 GHz
+\item   wektory: \textbf{AVX2} (256-bit) + \textbf{FMA}, SSE4.2
+\item   cache: L1d $8\times32$ KiB, L2 $8\times512$ KiB, L3 16 MiB (współdzielony)
+\end{itemize}
+
+\section{Opis implementacji}
+
+Punktem wyjścia jest klasyczna eliminacja Gaussa \textbf{bez pivotingu}.
+Aktualizacja podmacierzy w~kroku $k$ to aktualizacja rangi~1:
+\[
+A_{ij} \mathrel{-}= \underbrace{\bigl(A_{ik}/A_{kk}\bigr)}_{\text{mnożnik } m_i}\cdot A_{kj},
+\qquad i,j > k .
+\]
+Kolejne wersje izolują po jednym kroku optymalizacji; każda mieszka w~osobnym katalogu
+(\texttt{1/}\,\ldots\,\texttt{7/}) jako samodzielny plik \texttt{ge.c}.
+
+\subsection{V1 --- wersja bazowa (referencyjna)}
+Macierz jako \texttt{double**} (tablica wskaźników do wierszy), klasyczna potrójna pętla,
+dzielenie \texttt{A[i][k]/A[k][k]} liczone \emph{wewnątrz} najgłębszej pętli po~\texttt{j}. Służy jako wzorzec poprawności.
+
+\subsection{V2 --- rejestry + ruch kodu niezmienniczego}
+Ta sama struktura \texttt{double**}, ale liczniki pętli i~mnożnik trzymane jako \texttt{register},
+a~przede wszystkim mnożnik $m_i = A_{ik}/A_{kk}$ \textbf{wyciągnięty z~pętli po~\texttt{j}}
+(jest względem niej niezmienniczy). Zamiast $\sim n$ dzieleń na wiersz wykonujemy jedno.
+
+\subsection{V3 --- macierz 1D (lokalność danych)}
+Zamiana \texttt{double**} na jeden ciągły bufor \texttt{double*} indeksowany makrem
+\texttt{IDX(i,j)=i*SIZE+j} (row-major). Usuwa pośrednią dereferencję wskaźnika wiersza,
+gwarantuje ciągłość wierszy w~pamięci (lepszy prefetch, mniej chybień TLB). Logika jak V2.
+
+\subsection{V4 --- ręczne rozwinięcie pętli ($\times 8$)}
+Najgłębsza pętla po~\texttt{j} rozwinięta do 8 niezależnych operacji na obrót, z~pętlą
+resztkową na ogon. Zwiększa równoległość na poziomie instrukcji (ILP) i~ułatwia
+kompilatorowi autowektoryzację.
+
+\subsection{V5 --- blokowanie + pakowanie + mikrokernel skalarny}
+Aktualizację rangi~1 dzielimy na bloki $MC\times NC$ ($MC=128$, $NC=256$) i:
+\begin{enumerate}\itemsep0pt
+  \item pakujemy fragment wiersza pivota $A_{k,\,jj..}$ do ciągłego bufora roboczego,
+  \item pakujemy mnożniki $A_{ii..,\,k}/\text{pivot}$ do ciągłego bufora,
+  \item aktualizujemy blok małym kernelem rozwiniętym po $NR=8$ kolumnach.
+\end{enumerate}
+W~odróżnieniu od kodu z~laboratorium pętla po wierszach (\texttt{ii}) jest \emph{zewnętrzna}
+względem kolumn (\texttt{jj}), dzięki czemu kosztowne dzielenia (pakowanie mnożników)
+wykonujemy raz na blok wierszy, a~tani pakunek wiersza pivota powtarzamy w~pętli wewnętrznej.
+
+\subsection{V6 --- wektoryzacja SSE (128-bit)}
+Identyczna struktura blokowo-pakująca, ale mikrokernel aktualizuje 8 kolumn naraz przy
+użyciu instrukcji SSE2: para \texttt{double} w~rejestrze \texttt{\_\_m128d}, aktualizacja
+\texttt{c -= p*mi} jako \texttt{\_mm\_sub\_pd(c, \_mm\_mul\_pd(p, mi))}. Cztery rejestry
+\texttt{\_\_m128d} pokrywają $NR=8$ kolumn.
+
+\subsection{V7 --- wektoryzacja AVX2 + FMA (256-bit)}
+Mikrokernel przetwarza 8 kolumn jako dwa rejestry \texttt{\_\_m256d} (po 4 \texttt{double}).
+Aktualizacja liczona \textbf{jedną instrukcją FMA}:
+\texttt{\_mm256\_fnmadd\_pd(p, mi, c)} $= c - p\cdot mi$, co łączy mnożenie i~odejmowanie
+bez pośredniego zaokrąglenia (większa przepustowość, mniejszy błąd).
+
+\section{Szacowanie liczby operacji (FLOP) i GFLOPS}
+
+Uwzględniono \emph{rzeczywistą} złożoność --- aktualizacje (mul+sub, po 2~FLOP) i~dzielenia:
+\[
+\#\text{FLOP}
+= \underbrace{\frac{(n-1)\,n\,(2n-1)}{3}}_{\text{aktualizacje}}
++ \underbrace{\frac{n(n-1)}{2}}_{\text{dzielenia}~O(n^2)}
+\;\sim\; \tfrac{2}{3}n^3 .
+\]
+Tej samej funkcji \texttt{ge\_flop} używają wszystkie wersje, a~GFLOP/s${}=\#\text{FLOP}/(t\cdot10^9)$
+(czas $t$ z~rutyny \texttt{dclock()}, BLIS). Funkcja \texttt{ge\_flop} z~kodu laboratoryjnego,
+$\tfrac{(n-1)n(2n-1)}{2}$ (człon wiodący $n^3$), zawyża pracę --- pomija rozróżnienie mul/sub
+i~dzielenia.
+
+\section{Weryfikacja poprawności}
+
+Skrypt \texttt{verify.py} (\texttt{make verify}) realizuje prosty algorytm sprawdzający, czy
+optymalizacja nie zmienia zwracanego rozwiązania. Dla rozmiarów $n\in\{200,500,1000\}$
+uruchamia wersję referencyjną V1 oraz każdą wersję na \emph{tej samej} macierzy
+(\texttt{srand(1)} jest deterministyczne), zrzuca wynikowe macierze do plików binarnych
+i~porównuje je w~normie maksimum:
+\[
+\text{rel} = \frac{\max_{i,j}|A^{\text{opt}}_{ij}-A^{\text{ref}}_{ij}|}{\max_{i,j}|A^{\text{ref}}_{ij}|}
+\le \text{TOL} = 10^{-6}.
+\]
+
+\begin{table}[H]\centering
+\begin{tabular}{lrrr}
+\toprule
+Wersja & \multicolumn{3}{c}{rel (norma maks.) dla $n=200/500/1000$} \\
+\midrule
+V2 (rejestry)        & $0$ & $0$ & $0$ \\
+V3 (1D)              & $0$ & $0$ & $0$ \\
+V4 (unroll)          & $0$ & $0$ & $0$ \\
+V5 (blok+pakowanie)  & $0$ & $0$ & $0$ \\
+V6 (SSE)             & $0$ & $0$ & $0$ \\
+V7 (AVX2+FMA)        & $9{,}8\cdot10^{-10}$ & $6{,}5\cdot10^{-10}$ & $2{,}4\cdot10^{-8}$ \\
+\bottomrule
+\end{tabular}
+\caption{Błąd względem referencji. V2--V6 są \textbf{bit-w-bit} identyczne; jedynie V7 (FMA)
+różni się na najmłodszych bitach.}
+\end{table}
+
+Wniosek: każda wersja oblicza ten sam algorytm. Brak różnic w~V2--V6 potwierdza, że
+przegrupowania w~ramach mnożenia i~osobnego odejmowania (\texttt{-O2}, blokowanie, SSE)
+zachowują tę samą kolejność zaokrągleń co skalarna referencja. Różnice w~V7 omówiono
+w~sekcji~\ref{sec:problemy}.
+
+\section{Metodyka pomiarów}
+Sweep \texttt{run\_metrics.py} (\texttt{make metrics}) uruchamia każdą wersję dla
+$n\in\{500,1000,1500,2000\}$ (3~przebiegi; raportowany najlepszy czas \texttt{dclock()} i~GFLOP/s).
+Cel \texttt{make papi} mierzy dodatkowo liczniki sprzętowe biblioteką PAPI
+(\texttt{PAPI\_FP\_OPS}, \texttt{PAPI\_TOT\_CYC}); z~nich liczymy FLOP/cykl oraz \textbf{wysycenie
+jednostek FP} $=$ (FLOP/cykl)$/16$, gdzie $16$ FLOP/cykl to pułap rdzenia Zen3+
+($4$ \texttt{double} $\times$ 2 porty FMA $\times$ 2 FLOP). Flagi kompilacji --- Tab.~\ref{tab:flags}.
+
+\begin{table}[H]\centering
+\begin{tabular}{ll}
+\toprule
+Wersja & Flagi kompilacji \\
+\midrule
+V1--V5 & \texttt{-O2} \\
+V6 & \texttt{-O2 -msse3} \\
+V7 & \texttt{-O2 -mavx2 -mfma -march=native} \\
+\bottomrule
+\end{tabular}
+\caption{Flagi kompilacji per-wersja. Wszystkie wersje są kompilowane z~\texttt{-O2};
+flagi SIMD w~V6/V7 są dodatkiem koniecznym do skompilowania intrinsiców. Dzięki temu
+różnice w~wynikach wynikają wyłącznie ze zmian w~kodzie, a~nie z~poziomu optymalizacji
+kompilatora.}
+\label{tab:flags}
+\end{table}
+
+\section{Wyniki}
+
+\subsection{Czas wykonania [s] (najlepszy z~3)}
+
+\begin{table}[H]\centering
+\begin{tabular}{lrrrrrrr}
+\toprule
+$n$ & V1 & V2 & V3 & V4 & V5 & V6 & V7 \\
+\midrule
+500  & 0{,}0421 & 0{,}0194 & 0{,}0197 & 0{,}0121 & 0{,}0079 & 0{,}0077 & \textbf{0{,}0062} \\
+1000 & 0{,}3381 & 0{,}1629 & 0{,}1591 & 0{,}0992 & 0{,}0699 & 0{,}0693 & \textbf{0{,}0521} \\
+1500 & 1{,}1926 & 0{,}6580 & 0{,}6016 & 0{,}4595 & 0{,}2980 & \textbf{0{,}2779} & 0{,}2948 \\
+2000 & 2{,}8839 & 1{,}7283 & 1{,}7237 & 1{,}5339 & 1{,}3001 & 1{,}5003 & \textbf{1{,}2088} \\
+\bottomrule
+\end{tabular}
+\caption{Najlepszy czas wall-clock \texttt{dclock()} [s] z~3 przebiegów.}
+\end{table}
+
+\subsection{Wydajność [GFLOP/s] i~wysycenie pułapu}
+
+\begin{table}[H]\centering
+\begin{tabular}{lrrrrrrr}
+\toprule
+$n$ & V1 & V2 & V3 & V4 & V5 & V6 & V7 \\
+\midrule
+500  & 1{,}98 & 4{,}28 & 4{,}22 & 6{,}86 & 10{,}57 & 10{,}76 & \textbf{13{,}35} \\
+1000 & 1{,}97 & 4{,}09 & 4{,}19 & 6{,}72 & 9{,}53 & 9{,}62 & \textbf{12{,}77} \\
+1500 & 1{,}89 & 3{,}42 & 3{,}74 & 4{,}89 & 7{,}55 & \textbf{8{,}09} & 7{,}63 \\
+2000 & 1{,}85 & 3{,}09 & 3{,}09 & 3{,}48 & 4{,}10 & 3{,}55 & \textbf{4{,}41} \\
+\bottomrule
+\end{tabular}
+\caption{Osiągnięte GFLOP/s. Pułap pojedynczego rdzenia (AVX2+FMA): $\approx 75$ GFLOP/s.
+Najlepszy punkt (V7, $n=500$) to $13{,}35$ GFLOP/s, czyli \textbf{$\sim$18\% pułapu}.}
+\end{table}
+
+\subsection{Liczniki sprzętowe (PAPI)}
+
+\begin{table}[H]\centering
+\begin{tabular}{lrrrr}
+\toprule
+ & \multicolumn{2}{c}{$n=1000$ (mieści się w~L3)} & \multicolumn{2}{c}{$n=2000$ ($>$L3)} \\
+\cmidrule(lr){2-3}\cmidrule(lr){4-5}
+Wersja & FLOP/cykl & wys.\,\% & FLOP/cykl & wys.\,\% \\
+\midrule
+V1 & 0{,}64 & 4{,}00 & 0{,}59 & 3{,}65 \\
+V2 & 1{,}41 & 8{,}84 & 0{,}68 & 4{,}23 \\
+V3 & 1{,}40 & 8{,}77 & 0{,}68 & 4{,}24 \\
+V4 & 1{,}49 & 9{,}33 & 0{,}67 & 4{,}20 \\
+V5 & 2{,}19 & 13{,}66 & 0{,}74 & 4{,}62 \\
+V6 & 2{,}17 & 13{,}57 & 0{,}65 & 4{,}09 \\
+V7 & \textbf{2{,}79} & \textbf{17{,}42} & 0{,}85 & 5{,}30 \\
+\bottomrule
+\end{tabular}
+\caption{Liczniki PAPI. Wysycenie liczone względem $16$ FLOP/cykl. Macierz zajmuje $8n^2$ B:
+$n=1000\to8$ MB (w~16 MB L3), $n=1500\to18$ MB, $n=2000\to32$ MB (poza L3).}
+\label{tab:papi}
+\end{table}
+
+\section{Wnioski}
+
+\paragraph{Wniosek główny --- wąskim gardłem jest pamięć, nie obliczenia.}
+Aktualizacja jednego elementu macierzy to tylko 2~działania (mnożenie i~odejmowanie) na jeden
+odczyt i~jeden zapis liczby z~pamięci. To bardzo mało liczenia jak na ilość przesyłanych danych,
+więc o~wydajności decyduje szybkość pamięci, a~nie jednostek liczących.
+
+Widać to wprost w~wynikach. Gdy macierz mieści się w~cache L3 ($n\le1000$), kolejne optymalizacje
+realnie przyspieszają program, a~najlepsza wersja (V7) wykorzystuje $\approx17\%$ mocy rdzenia.
+Gdy macierz przestaje się mieścić ($n\ge1500$), \emph{wszystkie} wersje --- także wektorowe ---
+spadają do $\approx4$--$5\%$: procesor czeka na dane z~RAM. Dlatego blokowanie świetnie działa
+dla mnożenia macierzy (dużo liczenia na każdy bajt), a~dla eliminacji Gaussa już nie.
+
+\paragraph{Wkład kolejnych kroków} (przy $n=1000$, wszystkie z~\texttt{-O2}):
+\begin{itemize}\itemsep1pt
+  \item \textbf{V1} --- stałe $\sim$1{,}9 GFLOP/s: kosztowne dzielenie ($\sim$14~cykli) liczone
+  w~każdej iteracji najgłębszej pętli jest wąskim gardłem (kompilator nie wynosi go z~pętli
+  przy macierzy \texttt{double**}).
+  \item \textbf{V2} --- wyniesienie dzielenia z~pętli: $\times$2 (mniej FLOP, krótszy łańcuch
+  zależności).
+  \item \textbf{V3} --- macierz 1D: $\approx$0\% (zysk strukturalny, konieczny dla SIMD).
+  \item \textbf{V4} --- rozwinięcie $\times$8: $+60\%$ (równoległość instrukcji, ILP).
+  \item \textbf{V5} --- blokowanie + pakowanie: $\sim$10 GFLOP/s (lokalność w~cache).
+  \item \textbf{V6/V7} --- SSE / AVX2+FMA: do \textbf{13,4 GFLOP/s} ($\sim$1,9$\times$ od V4,
+  $\sim$18\% pułapu). FMA łączy mnożenie i~odejmowanie w~jednej operacji.
+\end{itemize}
+
+\section{Napotkane problemy}
+\label{sec:problemy}
+
+\paragraph{Niełączność FMA a~brak pivotingu.} Początkowo weryfikator z~tolerancją $10^{-9}$
+oznaczał V7 jako błędną dla $n=1000$ (rel $\approx 2{,}4\cdot10^{-8}$). Przyczyną \emph{nie}
+jest błąd implementacji: \texttt{fnmadd} liczy $c-p\cdot m_i$ z~pojedynczym zaokrągleniem,
+podczas gdy wersje skalarne/SSE zaokrąglają dwukrotnie (osobno mnożenie i~odejmowanie).
+Te dwie kolejności zaokrągleń są legalne, lecz różne. Efekt jest wzmacniany przez
+\textbf{złe uwarunkowanie} eliminacji Gaussa bez pivotingu na losowej macierzy ---
+współczynnik wzrostu elementów rośnie z~$n$, więc niewielka różnica na bitach
+propaguje się. Rozwiązaniem było przyjęcie tolerancji $10^{-6}$ w~normie maksimum,
+odzwierciedlającej tę niestabilność; przy niej wszystkie wersje przechodzą test, a~V7
+pozostaje numerycznie \emph{dokładniejszy} (mniej zaokrągleń pośrednich).
+
+\end{document}

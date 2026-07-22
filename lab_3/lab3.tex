@@ -1,0 +1,381 @@
+\documentclass[12pt,a4paper]{article}
+\usepackage{amsmath}
+\usepackage{amsfonts}
+\usepackage{tgpagella}
+\usepackage{graphicx}
+\usepackage{polski}
+\usepackage[utf8]{inputenc}
+\usepackage{listings}
+\usepackage{hyperref}
+
+\pagestyle{empty}
+
+\DeclareMathOperator{\sgn}{sgn}
+
+\begin{document}
+
+\title{Optymalizacja Kodu Na Różne Architektury\\Ćwiczenie 3}
+\date{}
+
+\maketitle
+
+
+\section{Wprowadzenie}
+Rozważmy następującą procedurę uruchamiającą eliminację Gaussa bez pivotingu
+
+\lstinputlisting[language=C, frame=none, escapeinside={(*}{*)}, caption={Bazowa wersja kodu}, label={kod}, basicstyle=\small]{ge1.c}
+
+\section{Ćwiczenia}
+
+Przy kolejnych krokach proszę wykonywać kopie aktualnych wersji stanu kodu.
+Będą potrzebne przy ostatnim punkcie oraz na kolejnych zajęciach.
+Proszę na bieżąco notować czasy wykonywania się obliczeń.
+
+\subsection{}
+
+
+Proszę wprowadzić zaznaczone w kodzie modyfikacje a następnie skompilować procedurę bez optymalizacji.
+Dla zadanego rozmiaru macierzy w kolejnych uruchomieniach wartość zmiennej \textbf{check} nie powinna ulegać zmianie.
+\begin{lstlisting}[language=bash, frame=none, basicstyle=\small, escapeinside={(*}{*)}]
+maciekw@Banach:~lab3> gcc ge1.c 
+maciekw@Banach:~lab3> ./a.out 1500
+call GETime: 1.314771e+00
+FLOP: 3.371626e+09
+GFLOP/s: 2.564421e+00
+Check: -4.605781e+16
+maciekw@Banach:~/studenci/OORA/skrypty/lab3>  
+\end{lstlisting}
+
+\subsection{}
+
+Proszę wykonać kopię procedury
+\begin{lstlisting}[language=bash, frame=none, basicstyle=\small, escapeinside={(*}{*)}]
+maciekw@Banach:~lab3> cp ge1.c ge2.c
+\end{lstlisting}
+Proszę umieścić w rejestrach liczniki pętli.\\
+Proszę skompilować procedurę z optymalizacją.\\
+Jaki jest czas działania?\\
+Jakie GFLOP/s uzyskuje procesor?
+
+\subsection{}
+
+Proszę wykonać kopię procedury
+\begin{lstlisting}[language=bash, frame=none, basicstyle=\small, escapeinside={(*}{*)}]
+maciekw@Banach:~lab3> cp ge2.c ge3.c
+\end{lstlisting}
+Proszę umieścić w rejestrze powtarzającą się w najbardziej zagnieżdżonym miejscu wartość.
+\begin{lstlisting}[language=C, frame=none, basicstyle=\small, escapeinside={(*}{*)}]
+multiplier = (A[i][k]/A[k][k]);
+\end{lstlisting}
+Proszę skompilować procedurę z optymalizacją.\\
+Jaki jest czas działania?\\
+Jakie GFLOP/s uzyskuje procesor?
+
+\subsection{}
+
+Proszę wykonać kopię procedury
+\begin{lstlisting}[language=bash, frame=none, basicstyle=\small, escapeinside={(*}{*)}]
+maciekw@Banach:~lab3> cp ge3.c ge4.c
+\end{lstlisting}
+Proszę ręcznie rozwinąć najbardziej zagnieżdżoną pętlę do 8 iteracji.
+\begin{lstlisting}[language=C, frame=none, basicstyle=\small, escapeinside={(*}{*)}]
+for (j = k+1; j < SIZE; ) {
+  if (j < (max(SIZE - BLKSIZE, 0))) {
+    //PROSZE UZUPELNIC
+    j += BLKSIZE;
+  }
+  else{
+    A[i][j]=A[i][j]-A[k][j]*multiplier;
+    j++;
+  }
+\end{lstlisting}
+Proszę skompilować procedurę z optymalizacją.\\
+Jaki jest czas działania?
+
+\subsection{}
+
+Proszę wykonać kopię procedury
+\begin{lstlisting}[language=bash, frame=none, basicstyle=\small, escapeinside={(*}{*)}]
+maciekw@Banach:~lab3> cp ge4.c ge5.c
+\end{lstlisting}
+Proszę zamienić deklarację macierzy na macierz jednowymiarową indeksowaną poprzez makro (patrz laboratorium 2).\\
+Proszę skompilować procedurę z optymalizacją.\\
+Jaki jest czas działania?\\
+Jakie GFLOP/s uzyskuje procesor?
+
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%5
+
+\subsection{}
+
+Proszę wykonać kopię procedury
+
+\begin{lstlisting}[language=bash, frame=none, basicstyle=\small]
+maciekw@Banach:~lab3> cp ge5.c ge6.c
+\end{lstlisting}
+
+Proszę wprowadzić blokowanie pamięci podręcznej oraz pakowanie danych do małych buforów roboczych.
+Całość wykonujemy analogicznie do \textbf{\href{https://github.com/flame/how-to-optimize-gemm}{https://github.com/flame/how-to-optimize-gemm}}\\
+
+\begin{enumerate}
+  \item blokowanie zakresu aktualizowanej macierzy,
+  \item pakowanie intensywnie używanych danych do buforów ciągłych,
+  \item aktualizacja bloku za pomocą małego kernela obliczeniowego.
+\end{enumerate}
+
+
+Proszę dodać następujące definicje rozmiarów bloków:
+
+\begin{lstlisting}[language=C, frame=none, basicstyle=\small]
+#define MR 8
+#define NR 8
+
+#define MC 128
+#define NC 256
+\end{lstlisting}
+
+Znaczenie parametrów jest następujące:
+
+\begin{itemize}
+  \item \textbf{NC} -- liczba kolumn w pakowanym fragmencie wiersza pivota,
+  \item \textbf{MC} -- liczba wierszy aktualizowanych w jednym bloku,
+  \item \textbf{NR} -- liczba kolumn przetwarzanych jednocześnie w ręcznie
+        rozwiniętym kernelu.
+\end{itemize}
+
+Następnie proszę utworzyć funkcję pakującą fragment wiersza pivota:
+
+\begin{lstlisting}[language=C, frame=none, basicstyle=\small]
+static void PackPivotRow(int n, const double *src, double *dst)
+{
+  int j;
+
+  for (j = 0; j < n; j++) {
+    dst[j] = src[j];
+  }
+}
+\end{lstlisting}
+
+Funkcja ta kopiuje ciągły fragment wiersza \textbf{A[k][j]} do lokalnego bufora roboczego.
+Spakowany fragment powinien być następnie użyty wiele razy dla różnych bloków wierszy.
+
+Proszę utworzyć funkcję pakującą mnożniki eliminacji:
+
+\begin{lstlisting}[language=C, frame=none, basicstyle=\small]
+static void PackMultipliers(int m, const double *A, int SIZE,
+                            int row0, int k, double pivot,
+                            double *mult)
+{
+  int i;
+
+  for (i = 0; i < m; i++) {
+    mult[i] = A[IDX(row0 + i, k, SIZE)] / pivot;
+  }
+}
+\end{lstlisting}
+
+Funkcja ta oblicza wartości:
+
+\begin{lstlisting}[language=C, frame=none, basicstyle=\small]
+A[i][k] / A[k][k]
+\end{lstlisting}
+
+dla małego bloku wierszy i zapisuje je w lokalnym buforze.
+
+Następnie proszę utworzyć kernel aktualizujący blok macierzy:
+
+\begin{lstlisting}[language=C, frame=none, basicstyle=\small]
+static void UpdateKernel(int m, int n, double *C,
+                         int ldc, const double *pivot_row,
+                         const double *mult)
+{
+  int i, j;
+
+  for (j = 0; j + NR <= n; j += NR) {
+    register double p0 = pivot_row[j];
+    register double p1 = pivot_row[j + 1];
+    register double p2 = pivot_row[j + 2];
+    register double p3 = pivot_row[j + 3];
+    register double p4 = pivot_row[j + 4];
+    register double p5 = pivot_row[j + 5];
+    register double p6 = pivot_row[j + 6];
+    register double p7 = pivot_row[j + 7];
+
+    for (i = 0; i < m; i++) {
+      double *c = C + i * ldc + j;
+      register double mi = mult[i];
+
+      c[0] = c[0] - p0 * mi;
+      c[1] = c[1] - p1 * mi;
+      c[2] = c[2] - p2 * mi;
+      c[3] = c[3] - p3 * mi;
+      c[4] = c[4] - p4 * mi;
+      c[5] = c[5] - p5 * mi;
+      c[6] = c[6] - p6 * mi;
+      c[7] = c[7] - p7 * mi;
+    }
+  }
+
+  for (; j < n; j++) {
+    register double pj = pivot_row[j];
+
+    for (i = 0; i < m; i++) {
+      C[i * ldc + j] = C[i * ldc + j] - pj * mult[i];
+    }
+  }
+}
+\end{lstlisting}
+
+Po dodaniu funkcji pomocniczych należy zmienić funkcję \textbf{ge} na
+następujący schemat:
+
+\begin{lstlisting}[language=C, frame=none, basicstyle=\small]
+int ge(double *A, int SIZE)
+{
+  int k;
+  int ii, jj;
+
+  double packed_pivot[NC];
+  double packed_mult[MC];
+
+  for (k = 0; k < SIZE; k++) {
+    double pivot = A[IDX(k, k, SIZE)];
+
+    for (jj = k + 1; jj < SIZE; jj += NC) {
+      int jb = MIN(NC, SIZE - jj);
+
+      PackPivotRow(jb, &A[IDX(k, jj, SIZE)], packed_pivot);
+
+      for (ii = k + 1; ii < SIZE; ii += MC) {
+        int ib = MIN(MC, SIZE - ii);
+
+        PackMultipliers(ib, A, SIZE, ii, k, pivot, packed_mult);
+
+        UpdateKernel(ib, jb, &A[IDX(ii, jj, SIZE)],
+                     SIZE, packed_pivot, packed_mult);
+      }
+    }
+  }
+
+  return 0;
+}
+\end{lstlisting}
+
+
+
+Proszę skompilować procedurę z optymalizacją:
+Jaki jest czas działania?\\
+Jakie GFLOP/s uzyskuje procesor?
+
+
+%%%%%%%%%%%%
+
+
+
+\subsection{}
+
+Proszę wykonać kopię procedury
+\begin{lstlisting}[language=bash, frame=none, basicstyle=\small, escapeinside={(*}{*)}]
+maciekw@Banach:~lab3> cp ge6.c ge7.c
+\end{lstlisting}
+Proszę wprowadzić operacje wetorowe SSE3 (patrz laboratorium 2).
+\begin{lstlisting}[language=C, frame=none, basicstyle=\small, escapeinside={(*}{*)}]
+#include <x86intrin.h>
+...
+  for (j = 0; j + NR <= n; j += NR) {
+    register __m128d p01 = _mm_loadu_pd(pivot_row + j);
+    register __m128d p23 = _mm_loadu_pd(pivot_row + j + 2);
+    register __m128d p45 = _mm_loadu_pd(pivot_row + j + 4);
+    register __m128d p67 = _mm_loadu_pd(pivot_row + j + 6);
+
+    for (i = 0; i < m; i++) {
+      double *c = C + i * ldc + j;
+
+      register __m128d mmult = _mm_set1_pd(mult[i]);
+
+      register __m128d c01 = _mm_loadu_pd(c);
+      register __m128d c23 = _mm_loadu_pd(c + 2);
+      register __m128d c45 = _mm_loadu_pd(c + 4);
+      register __m128d c67 = _mm_loadu_pd(c + 6);
+
+      c01 = _mm_sub_pd(c01, _mm_mul_pd(p01, mmult));
+      c23 = _mm_sub_pd(c23, _mm_mul_pd(p23, mmult));
+      c45 = _mm_sub_pd(c45, _mm_mul_pd(p45, mmult));
+      c67 = _mm_sub_pd(c67, _mm_mul_pd(p67, mmult));
+
+      _mm_storeu_pd(c,     c01);
+      _mm_storeu_pd(c + 2, c23);
+      _mm_storeu_pd(c + 4, c45);
+      _mm_storeu_pd(c + 6, c67);
+    }
+  }
+\end{lstlisting}
+Proszę skompilować procedurę z optymalizacją.\\
+Jaki jest czas działania?\\
+Jakie GFLOP/s uzyskuje procesor?
+
+\subsection{}
+
+Proszę wykonać kopię procedury
+\begin{lstlisting}[language=bash, frame=none, basicstyle=\small, escapeinside={(*}{*)}]
+maciekw@Banach:~lab3> cp ge7.c ge8.c
+\end{lstlisting}
+Proszę wprowadzić 256-bitowe operacje wetorowe AVX (patrz laboratorium 2).
+\begin{lstlisting}[language=C, frame=none, basicstyle=\small, escapeinside={(*}{*)}]
+#include <immintrin.h>
+register __m256d ...
+tmp0 = _mm256_loadu_pd(...));
+...
+\end{lstlisting}
+Proszę skompilować procedurę z optymalizacją.
+\begin{lstlisting}[language=bash, frame=none, basicstyle=\small, escapeinside={(*}{*)}]
+maciekw@Banach:~lab3> gcc -mavx ge8.c
+\end{lstlisting}
+Jaki jest czas działania?\\
+Jakie GFLOP/s uzyskuje procesor?
+
+
+\subsection{}
+
+Proszę wszystkie uzyskane na Laboratoriach kody skompilować z opcją optymalizacji \textbf{-O2} oraz przetestować opcje \textbf{-march=native} oraz \textbf{-mfma}.
+\begin{lstlisting}[language=bash, frame=none, basicstyle=\footnotesize, escapeinside={(*}{*)}]
+maciekw@Banach:~/studenci/OORA/skrypty/lab3> gcc -mavx -O2 ge7.c 
+maciekw@Banach:~/studenci/OORA/skrypty/lab3> ./a.out 1500
+call GETime: 3.592460e-01
+FLOP: 3.371626e+09
+GFLOP/s: 9.385284e+00
+Check: -4.605781e+16
+maciekw@Banach:~lab3> gcc -mavx -O2 -march=native ge8.c
+maciekw@Banach:~lab3> ./a.out 1500
+call GETime: 4.534000e-01
+FLOP: 3.371626e+09
+GFLOP/s: 7.436316e+00
+Check: -4.605781e+16
+maciekw@Banach:~lab3> gcc -mavx -O2 -mfma ge8.c
+maciekw@Banach:~lab3> ./a.out 1500
+call GETime: 2.618760e-01
+FLOP: 3.371626e+09
+GFLOP/s: 1.287489e+01
+Check: -4.605781e+16
+maciekw@Banach:~lab3> gcc -mavx -O2 -march=native -mfma ge8.c
+maciekw@Banach:~lab3> ./a.out 1500
+call GETime: 2.518740e-01
+FLOP: 3.371626e+09
+GFLOP/s: 1.338616e+01
+Check: -4.605781e+16
+maciekw@Banach:~lab3>  
+\end{lstlisting}
+Jaki jest ich czas działania?
+
+
+
+
+\section{Podsumowanie}
+
+Które metody optymalizacji dały najlepsze rezultaty?\\
+Dlaczego? Jakie mechanizmy za nimi stały?
+
+
+\end{document}
+ 
+

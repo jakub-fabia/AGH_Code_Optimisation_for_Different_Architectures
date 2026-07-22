@@ -1,0 +1,210 @@
+\documentclass[11pt,a4paper]{article}
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage[polish]{babel}
+\usepackage[margin=2.2cm]{geometry}
+\usepackage{booktabs}
+\usepackage{listings}
+\usepackage{xcolor}
+\usepackage{hyperref}
+\usepackage{float}
+
+\lstset{
+  basicstyle=\ttfamily\small,
+  keywordstyle=\color{blue!60!black},
+  commentstyle=\color{green!50!black},
+  stringstyle=\color{orange!70!black},
+  numbers=left,
+  numberstyle=\tiny\color{gray},
+  frame=single,
+  breaklines=true,
+  showstringspaces=false,
+}
+
+\title{Zadanie 1 --- Optymalizacja Kodu Na Różne Architektury}
+\author{Jakub Fabia}
+\date{\today}
+
+\begin{document}
+\maketitle
+
+\section{Platforma testowa}
+
+Poniżesze zadania zostały wykonanie na platformie opisanej poniżej: 
+
+System:
+\begin{itemize}
+\item   Kernel: 6.18.7-76061807-generic 
+\item   arch: x86\_64 
+\item   bits: 64
+\item   Distro: Pop!\_OS 24.04 LTS noble
+\end{itemize}
+
+CPU:
+\begin{itemize}
+\item   Info: 8-core 
+\item   model: AMD Ryzen 7 6800H
+\item   type: MT MCP 
+\item   cache: L2: 4 MiB 
+\item   Base/Boost speed (GHz): 3.2 / 4,7
+\end{itemize}
+
+\section{Opis implementacji}
+
+\subsection{V1 --- wersja bazowa}
+Wczytujemy dane z pliku i przetwarzamy utworzony string.
+
+\texttt{normalise} przyjmuje \texttt{const std::string\&} i~buduje nowy, początkowo pusty \texttt{std::string s} poprzez rozszerzenie per-znak (\texttt{s += c}). Pętla \texttt{range-for} iteruje po każdym bajcie wejścia. Bajt rzutowany jest na \texttt{unsigned char} a następnie:
+\begin{itemize}
+    \item Filtruje warunkiem \texttt{u < 32 || u > 126}
+    \item Jeśli \texttt{std::isspace} i ostatni znak nie jest spacją to dopisje spację
+    \item Jeśli \texttt{std::ispunct} to dopisuje ','
+    \item Zamienia wszystkie litery na małe
+\end{itemize}
+
+\texttt{deduplicate} także przyjmuje \texttt{const std::string\&} i~buduje nowy \texttt{std::string result}. Pętla kolejno:
+\begin{itemize}
+    \item Sprawdza czy bieżący znak to \texttt{','}
+    \item Pomija ciąg spacji
+    \item Zaznacza \texttt{start} wyrazu
+    \item Przesuwa \texttt{i} do pierwszej spacji/przecinka
+    \item Porównuje kopię znalezionego słowa z słowem poprzednim
+\end{itemize}
+Jeśli są różne, dołączany jest po spacji, a~nowy wyraz przypisywany jest do \texttt{prev}.
+
+\subsection{V2 --- prealokacja}
+Semantyka analogiczna do V1. Jedyna różnica --- tuż po utworzeniu wyjściowych stringów rezerwujemy dla nich pamięć:
+\begin{itemize}
+    \item \texttt{s.reserve(input.size())} w \texttt{normalise}
+    \item \texttt{result.reserve(s.size())} w \texttt{deduplicate}
+\end{itemize}
+Rozmiar wyjścia nigdy nie przekracza wejścia (każda operacja albo usuwa znak, albo zastępuje 1:1), więc \texttt{reserve} powinien wyeliminować realokacje przy \texttt{operator+=}. Alokacja per-wyraz w~\texttt{deduplicate} (\texttt{substr} + kopia do \texttt{prev}) pozostaje.
+
+\subsection{V3 --- in-place + string\_view}
+Obie funkcje przyjmują teraz \texttt{std::string\&} i~nie zwracają niczego --- modyfikują bufor w~miejscu.
+
+\texttt{normalise} działa analogicznie do V1, ale zamiast budować nowy string, operuje w~miejscu na dwóch indeksach:
+\begin{itemize}
+    \item \texttt{read} --- głowica odczytu, wędruje po każdym bajcie bufora (odpowiednik pętli z V1)
+    \item \texttt{write} --- głowica zapisu, wskazuje pozycję kolejnego zachowanego bajtu
+\end{itemize}
+Zamiast \texttt{s += c} zapisujemy przez \texttt{s[write++] = c}. Na końcu \texttt{write} równa się długości znormalizowanego wyjścia, więc \texttt{s.resize(write)} ucina ogon.
+
+\texttt{deduplicate} analogicznie --- używa tej samej pary indeksów \texttt{read}/\texttt{write}, ale w~innym celu:
+\begin{itemize}
+    \item \texttt{read} --- analogicznie jak w \texttt{normalise}, wędruje po bufore szukając kolejnych wyrazów
+    \item \texttt{write} --- wskazuje koniec zdeduplikowanego wyjścia; na końcu \texttt{s.resize(write)} ucina ogon
+    \item \texttt{prev} przechowywany jako \texttt{std::string\_view}, czyli wskaźnik na wycinek stringa, bez potrzeby alokacji pamięci
+    \item Jeśli usunęliśmy duplikat i słowo, na które trafiliśmy jest unikalne to przepisujemy je w odpowiednie miejsce
+\end{itemize}
+
+W~obu funkcjach zachodzi \texttt{write} $\leq$ \texttt{read}, więc czytamy przed sobą, piszemy za sobą --- bez kolizji mimo pracy na tym samym buforze.
+
+\subsection{V4 --- iteratory i~algorytmy standardowe}
+Bazuje na V1 (funkcje zwracają nowy \texttt{std::string}, brak pracy in-place), ale pętle zastąpione są jawnymi wywołaniami algorytmów z~biblioteki standardowej.
+
+\texttt{normalise} realizuje ten sam łańcuch transformacji co V1, ale jako trzy osobne przebiegi po buforze:
+\begin{itemize}
+    \item \texttt{std::copy\_if} z~\texttt{std::back\_inserter} --- filtruje bajty spoza zakresu \texttt{[32, 126]} do nowego stringa
+    \item \texttt{std::transform} --- mapuje w~miejscu: \texttt{ispunct} $\to$ \texttt{','}, \texttt{isspace} $\to$ \texttt{' '}, litery $\to$ \texttt{tolower}
+    \item \texttt{std::unique} z~predykatem \texttt{a == ' ' \&\& b == ' '} + \texttt{s.erase} --- kolapsuje sąsiadujące spacje do jednej
+    \item końcowe \texttt{s.erase(s.begin())} usuwa ewentualną wiodącą spację
+\end{itemize}
+
+\texttt{deduplicate} analogicznie idzie w~stylu ,,STL''. Tokenizacja przez iteratory i~\texttt{std::find\_if} do \texttt{std::vector<std::string>} (każdy wyraz i~każdy przecinek jako osobny token), potem:
+\begin{itemize}
+    \item \texttt{std::unique} z~predykatem traktującym \texttt{','} jako barierę (\texttt{a != "," \&\& b != "," \&\& a == b}) --- usuwa sąsiadujące duplikaty wyrazów, ale nie łączy duplikatów przez przecinek
+    \item pętla re-join składa tokeny z~powrotem w~string: przecinki bez odstępu, wyrazy poprzedzone spacją gdy wynik nie jest pusty
+\end{itemize}
+
+Wersja świadomie spełnia literę wymagania ,,użyj iteratorów i~algorytmów z~biblioteki standardowej'', ale jest to anty-wzorzec: każde przejście (\texttt{copy\_if}, \texttt{transform}, \texttt{unique}) to osobny przebieg po buforze, zamiast zrobić wszystko w~jednym jak V1; tokenizacja w~\texttt{vector<std::string>} alokuje osobny \texttt{std::string} per wyraz --- dokładnie ten sam problem, który w~V3 został rozwiązany przez \texttt{string\_view}.
+
+\subsection{V5 --- bare-metal (wskaźniki + memmove)}
+Rezygnacja ze \texttt{std::string} na rzecz surowych tablic \texttt{char*}. Wejście wczytywane jednym \texttt{fread} do bufora alokowanego \texttt{std::malloc(fsize)}; drugi bufor tego samego rozmiaru służy jako wyjście.
+
+\texttt{normalise(const char* src, size\_t n, char* dst)} działa analogicznie do V1, ale:
+\begin{itemize}
+    \item Pisze do osobnego bufora (brak nakładania)
+    \item Używa inline'owych predykatów \texttt{is\_ws} i~\texttt{is\_punct} po zakresach ASCII zamiast \texttt{std::isspace}/\texttt{std::ispunct} (pomija locale)
+    \item Lowercase przez operację bitową \texttt{(u | 0x20)} zamiast \texttt{std::tolower}
+\end{itemize}
+
+\texttt{deduplicate(char* buf, size\_t n)} analogicznie do V3, ale:
+\begin{itemize}
+    \item Wskaźniki \texttt{char* w} / \texttt{const char* r} zamiast indeksów
+    \item \texttt{prev} jako \texttt{const char*} + \texttt{prev\_len} (ręczny \texttt{string\_view})
+    \item Porównanie wyrazów przez \texttt{std::memcmp} zamiast pętli
+    \item Kompaktowanie wyrazu przez \texttt{std::memmove} (nie \texttt{memcpy} --- zakresy mogą się nakładać)
+\end{itemize}
+
+\subsection{V6 --- równoległa (std::thread)}
+Wejście dzielone na \texttt{NUM\_THREADS = 4} fragmenty. Granice wyznaczane są analogicznie do klasycznego split-at-whitespace: kandydata na podział umieszczamy w~punkcie \texttt{input.size()/NUM\_THREADS $\cdot$ i}, a~następnie przesuwamy go w~prawo aż do najbliższego biełego znaku --- żaden wyraz nie zostaje przecięty.
+
+Każdy fragment trafia do własnego wątku jako lambda wywołująca \texttt{deduplicate(normalise(part))} (funkcje z~V1). Po \texttt{join()} następuje merge:
+\begin{itemize}
+    \item Wyniki konkatenowane z~separatorem \texttt{' '}
+    \item Na scalonym wyniku uruchamiany jest \emph{jeszcze jeden} przebieg \texttt{deduplicate}
+\end{itemize}
+Dodatkowy przebieg jest konieczny, bo duplikaty sąsiadujące mogą leżeć po dwóch stronach granicy fragmentu (wątek kończy na ,,hello'', kolejny zaczyna ,,hello'') --- osobne wywołania \texttt{deduplicate} w~wątkach nie widzą tej pary.
+
+\section{Metodyka pomiarów}
+Każda wersja skompilowana w~Makefile z~flagą \texttt{-pg}, uruchomiona na plikach o~rozmiarach 1, 5, 25, 50~MB, wygenerowanych skryptem w pythonie.
+Dla każdej kombinacji wykonano 3 przebiegi (\texttt{/usr/bin/time -v}), raportując najlepszy czas i~szczytowy RSS. Sweep wywoływany przez \texttt{make metrics} zapisuje wyniki do \texttt{metrics.txt} w~każdym katalogu wersji. Profilowanie hotspotów przez \texttt{gprof} zapisane do \texttt{raport.txt}.
+
+\section{Wyniki}
+
+\subsection{Czas wykonania w~zależności od rozmiaru}
+
+\begin{table}[H]\centering
+\begin{tabular}{lrrrrrr}
+\toprule
+Rozmiar & V1 & V2 & V3 & V4 & V5 & V6 \\
+\midrule
+1~MB  & 0{,}060 & 0{,}060 & 0{,}040 & 0{,}250 & \textbf{0{,}010} & 0{,}520 \\
+5~MB  & 0{,}280 & 0{,}270 & 0{,}160 & 1{,}290 & \textbf{0{,}090} & 0{,}520 \\
+25~MB & 1{,}390 & 1{,}390 & 0{,}830 & 6{,}430 & \textbf{0{,}450} & 2{,}640 \\
+50~MB & 2{,}780 & 2{,}750 & 1{,}640 & 12{,}920 & \textbf{0{,}900} & 5{,}320 \\
+\bottomrule
+\end{tabular}
+\caption{Najlepszy czas wall-clock [s] z~3 przebiegów.}
+\end{table}
+
+\subsection{Szczytowy RSS (50~MB)}
+
+\begin{table}[h]\centering
+\begin{tabular}{lrrrrrr}
+\toprule
+  & V1 & V2 & V3 & V4 & V5 & V6 \\
+\midrule
+RSS [MB] & 193 & 193 & 106 & 444 & \textbf{99} & 430 \\
+\bottomrule
+\end{tabular}
+\caption{Szczytowy RSS (50~MB)}
+V5 trzyma tylko bufor wejściowy + wyjściowy. V4 alokuje \texttt{vector<string>} per wyraz, V6 alokuje 4 kopie fragmentów + bufor scalony.
+\end{table}
+
+\subsection{Hotspoty (gprof, V1, 50~MB)}
+\begin{itemize}\itemsep0pt
+  \item \texttt{normalise} --- 42\% czasu (pętla znak-po-znaku + \texttt{isspace/ispunct} przez locale).
+  \item \texttt{deduplicate} --- 27\% (dominują \texttt{substr} + konstrukcje \texttt{std::string} per-wyraz).
+  \item Operatory iteratorów \texttt{std::string} (\texttt{operator++}, \texttt{operator*}, \texttt{operator!=}) --- łącznie $\sim$25\% z~powodu instrumentacji \texttt{-pg} (brak inline'owania).
+\end{itemize}
+
+\section{Wnioski}
+
+\paragraph{V2 (prealokacja).} Zysk pomijalny ($<1\%$) --- geometryczny wzrost \texttt{std::string} daje tylko $\log_2 n$ realokacji, a~dominuje praca per-znak.
+
+\paragraph{V3 (in-place + string\_view)} Przyspieszenie o~$\sim$40\% dzięki eliminacji alokacji per-wyraz (\texttt{string\_view}) i~kompaktowaniu in-place zamiast budowania drugiego stringa. Najcenniejsza pojedyncza modyfikacja.
+
+\paragraph{V4 (iteratory + algorytmy STL)} Ponad 4-krotne spowolnienie. Trzy przebiegi po buforze (\texttt{copy\_if}, \texttt{transform}, \texttt{unique}) i tokenizacja do \texttt{vector<string>} (alokacja per-wyraz) lekko poprawiły czytelność, jednak znacznie zwiększyły używaną pamięć i spowolniły program.
+
+\paragraph{V5 (bare-metal)} 3 razy szybszy niż V1. Najszybsza i najoszczędniejsza ze wszystkich opcji, jednocześnie najbardziej skomplikowany kod.
+
+\paragraph{V6 (równoległa)} Narzut tworzenia wątków + 4 kopii przez \texttt{substr} + dodatkowy przebieg \texttt{deduplicate} na merge przeważa nad zyskiem z~4 rdzeni. Sensowna dla większych wejść niż 50 MB.
+
+\section{Napotkane problemy}
+
+\paragraph{Różnice w~wyjściu między ,,rodzinami''.} Początkowo V1/V2/V6 produkowały \texttt{"hello, world"} a~V3/V4/V5 --- \texttt{"hello,world"} (bez spacji po przecinku). Wersje build-new-string bezwarunkowo dodawały spację przed każdym zachowywanym wyrazem, podczas gdy wersje in-place ją pomijały po przecinku, aby uniknąć kosztownego przesuwania bufora. Rozwiązaniem było wprowadzenie jednolitej reguły ,,zachowaj spacjowanie ze źródła'' --- w~\texttt{deduplicate} spacja przed wyrazem dodawana jest tylko wtedy, gdy w~oryginale występowała (\texttt{s[word\_start - 1] == ' '}). W~wariantach in-place pozycja \texttt{word\_start - 1} była wciąż nietknięta w~momencie sprawdzenia, więc ten sam warunek działał poprawnie bez przesuwania reszty bufora. Po tej zmianie wszystkie sześć wersji produkuje identyczne bajt-po-bajcie wyjście.
+
+
+\end{document}

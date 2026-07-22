@@ -1,0 +1,95 @@
+//requires additional changes to the code to make it work
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <sys/time.h>
+#include <time.h>
+
+static double gtod_ref_time_sec = 0.0;
+
+static inline int max(int a, int b) { return a > b ? a : b; }
+
+#define IDX(i, j) ((i) * SIZE + (j))
+
+double ge_flop(int SIZE)
+{
+    double n = (double) SIZE;
+    return (n - 1.0) * n * (2.0 * n - 1.0) / 2.0;
+}
+
+/* Adapted from the bl2_clock() routine in the BLIS library */
+
+double dclock()
+{
+  double the_time, norm_sec;
+  struct timeval tv;
+  gettimeofday( &tv, NULL );
+  if ( gtod_ref_time_sec == 0.0 )
+    gtod_ref_time_sec = ( double ) tv.tv_sec;
+  norm_sec = ( double ) tv.tv_sec - gtod_ref_time_sec;
+  the_time = norm_sec + tv.tv_usec * 1.0e-6;
+  return the_time;
+}
+
+int ge(double *A, int SIZE)
+{
+  static int BLKSIZE = 8;
+  register int i,j,k;
+  register double multiplier;
+  for (k = 0; k < SIZE; k++) {
+    for (i = k+1; i < SIZE; i++) {
+      multiplier = (A[IDX(i,k)]/A[IDX(k,k)]);
+      for (j = k+1; j < SIZE;) {
+          if (j < (max(SIZE - BLKSIZE, 0))) {
+            A[IDX(i,j  )]=A[IDX(i,j  )]-A[IDX(k,j  )]*multiplier;
+            A[IDX(i,j+1)]=A[IDX(i,j+1)]-A[IDX(k,j+1)]*multiplier;
+            A[IDX(i,j+2)]=A[IDX(i,j+2)]-A[IDX(k,j+2)]*multiplier;
+            A[IDX(i,j+3)]=A[IDX(i,j+3)]-A[IDX(k,j+3)]*multiplier;
+            A[IDX(i,j+4)]=A[IDX(i,j+4)]-A[IDX(k,j+4)]*multiplier;
+            A[IDX(i,j+5)]=A[IDX(i,j+5)]-A[IDX(k,j+5)]*multiplier;
+            A[IDX(i,j+6)]=A[IDX(i,j+6)]-A[IDX(k,j+6)]*multiplier;
+            A[IDX(i,j+7)]=A[IDX(i,j+7)]-A[IDX(k,j+7)]*multiplier;
+            j += BLKSIZE;
+          }
+          else{
+            A[IDX(i,j)]=A[IDX(i,j)]-A[IDX(k,j)]*multiplier;
+            j++;
+          }
+      }
+    }
+  }
+  return 0;
+}
+
+int main( int argc, const char* argv[] )
+{
+  int i,j,k,iret;
+  double dtime;
+  int SIZE = atoi(argv[1]);
+  double *matrix = malloc((size_t)SIZE * SIZE * sizeof(double));
+  srand(1);
+  for (i = 0; i < SIZE; i++) {
+    for (j = 0; j < SIZE; j++) {
+      matrix[IDX(i,j)] = rand();
+    }
+  }
+  printf("call GE");
+  dtime = dclock();
+  iret = ge(matrix,SIZE);
+  dtime = dclock()-dtime;
+  printf("Time: %le \n", dtime);
+  printf("FLOP: %le \n", ge_flop(SIZE));
+  printf("GFLOP/s: %le \n", ge_flop(SIZE) / dtime / 1.0e9);
+
+  double check=0.0;
+  for (i = 0; i < SIZE; i++) {
+    for (j = 0; j < SIZE; j++) {
+      check = check + matrix[IDX(i,j)];
+    }
+  }
+  printf( "Check: %le \n", check);
+  fflush( stdout );
+
+
+  return iret;
+}

@@ -1,0 +1,8 @@
+[project]
+name = "zad2-ge-opt"
+version = "0.1.0"
+description = "Optymalizacja eliminacji Gaussa — weryfikacja i pomiary wydajnosci"
+requires-python = ">=3.10"
+dependencies = [
+    "numpy>=1.26",
+]
